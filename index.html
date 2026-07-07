@@ -103,6 +103,12 @@ input,select,textarea{font:inherit;color:inherit}
 }
 .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .chip.sm{padding:5px 11px;font-size:12.5px}
+.chip.xs{padding:5px 9px;font-size:12px;border-radius:9px;box-shadow:none}
+.syllist{display:flex;flex-direction:column;gap:8px;max-height:44vh;overflow-y:auto;margin:0 -2px;padding:0 2px}
+.sylrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+.sylname{flex:1;min-width:120px;font-weight:600;font-size:14px}
+.sylterms{display:flex;gap:5px;flex-wrap:wrap}
+.sylx{opacity:.5}
 
 /* ---------- forms ---------- */
 .field{margin-bottom:16px}
@@ -467,7 +473,7 @@ input,select,textarea{font:inherit;color:inherit}
    the rename). Calendar auto-plan · subject mix · chapters · streaks.
    ================================================================ */
 
-const VERSION = '0.12.2';
+const VERSION = '0.13.0';
 const LS_KEY  = 'migistudy_settings_v1';
 const LOG_KEY = 'migistudy_log_v1';
 const SUBJECTS = [
@@ -477,45 +483,31 @@ const SUBJECTS = [
   {k:'SC', name:'Science', abbr:'Sci',  color:'#059669'},
 ];
 
-// Built-in MOE-based syllabus defaults, editable per school. P3 is from real ACS(J) materials;
-// other levels are standard MOE topics you can tweak. Each entry: {t: chapter, term: 1–4}.
+// Built-in syllabus defaults from the kids' actual textbook contents (P2/P3) + MOE topics (others).
+// English has no chapter syllabus (spelling/composition/reading isn't chapter-based). Chinese is
+// listed as numbered lessons 第一课…第X课. Chapters load with NO term — you tag T1–T4 yourself.
+const CN_NUM = ['一','二','三','四','五','六','七','八','九','十','十一','十二','十三','十四','十五','十六','十七','十八','十九','二十'];
+function clLessons(n){ return Array.from({length:n}, (_,i)=>({t:'第'+CN_NUM[i]+'课', term:null})); }
+function chs(list){ return list.map(t=>({t, term:null})); }
 const CURRICULUM = {
-  P1: {
-    EN: [{t:'STELLAR Units 1–2',term:1},{t:'STELLAR Units 3–4',term:2},{t:'STELLAR Units 5–6',term:3},{t:'STELLAR Units 7–8 + revision',term:4}],
-    CL: [{t:'核心课文 1–4',term:1},{t:'核心课文 5–8',term:2},{t:'核心课文 9–12',term:3},{t:'核心课文 13–16 + 复习',term:4}],
-    MA: [{t:'Numbers to 10',term:1},{t:'Number Bonds',term:1},{t:'Addition & Subtraction within 20',term:1},{t:'Shapes & Patterns',term:2},{t:'Ordinal Numbers',term:2},{t:'Numbers to 100',term:2},{t:'Addition & Subtraction within 100',term:3},{t:'Multiplication',term:3},{t:'Division',term:3},{t:'Length',term:4},{t:'Time',term:4},{t:'Money',term:4},{t:'Picture Graphs',term:4}],
-    SC: []
-  },
-  P2: {
-    EN: [{t:'STELLAR Units 1–2',term:1},{t:'STELLAR Units 3–4',term:2},{t:'STELLAR Units 5–6',term:3},{t:'All units + revision',term:4}],
-    CL: [{t:'核心课文 1–5',term:1},{t:'核心课文 6–10',term:2},{t:'核心课文 11–15',term:3},{t:'核心课文 16–20 + 看图写话',term:4}],
-    MA: [{t:'Numbers to 1000',term:1},{t:'Addition & Subtraction within 1000',term:1},{t:'Multiplication & Division (2, 5, 10)',term:2},{t:'Length (m, cm)',term:2},{t:'Multiplication & Division (3, 4)',term:3},{t:'Mass (kg, g)',term:3},{t:'Money',term:3},{t:'Fractions',term:4},{t:'Time',term:4},{t:'Volume',term:4},{t:'Picture Graphs',term:4},{t:'2D & 3D Shapes',term:4}],
-    SC: []
-  },
-  P3: {
-    EN: [{t:'STELLAR Units 1–2',term:1},{t:'STELLAR Units 3–4',term:2},{t:'STELLAR Units 5–6',term:3},{t:'All P3 STELLAR units + revision',term:4}],
-    CL: [{t:'会话 第一到第三课',term:1},{t:'核心课文 1–6',term:2},{t:'看图写段',term:3},{t:'核心课文 1–16 + 复习',term:4}],
-    MA: [{t:'Numbers to 10,000',term:1},{t:'Addition & Subtraction within 10,000',term:1},{t:'Money',term:1},{t:'Multiplication & Division',term:2},{t:'Word Problems (4 operations)',term:2},{t:'Bar Graphs',term:2},{t:'Angles',term:3},{t:'Perpendicular & Parallel Lines',term:3},{t:'Fractions',term:3},{t:'Word Problems (Whole Numbers)',term:3},{t:'Revision (all P1–P3)',term:4}],
-    SC: [{t:'Diversity of Living & Non-Living Things',term:1},{t:'Classification of Living Things',term:2},{t:'Diversity of Materials',term:2},{t:'Life Cycles of Plants',term:3},{t:'Life Cycles of Animals',term:3},{t:'Magnets',term:4},{t:'Revision (all P3)',term:4}]
-  },
-  P4: {
-    EN: [{t:'STELLAR Units 1–2',term:1},{t:'STELLAR Units 3–4',term:2},{t:'STELLAR Units 5–6',term:3},{t:'All units + revision',term:4}],
-    CL: [{t:'核心课文 1–5',term:1},{t:'核心课文 6–10',term:2},{t:'核心课文 11–15',term:3},{t:'核心课文 16–20 + 作文 + 复习',term:4}],
-    MA: [{t:'Numbers to 100,000',term:1},{t:'Factors & Multiples',term:1},{t:'Multiplication & Division',term:1},{t:'Fractions',term:2},{t:'Mixed Numbers & Improper Fractions',term:2},{t:'Decimals',term:3},{t:'Angles',term:3},{t:'Squares & Rectangles',term:3},{t:'Symmetry',term:4},{t:'Area & Perimeter',term:4},{t:'Time',term:4},{t:'Tables & Line Graphs',term:4}],
-    SC: [{t:'Matter (three states)',term:1},{t:'Heat & Temperature',term:2},{t:'Light & Shadows',term:3},{t:'Magnets',term:3},{t:'Plant & Human Systems',term:4},{t:'Revision (all P4)',term:4}]
-  },
-  P5: {
-    EN: [{t:'Units 1–3',term:1},{t:'Units 4–6',term:2},{t:'Units 7–9',term:3},{t:'Revision + composition & comprehension',term:4}],
-    CL: [{t:'核心课文 1–4',term:1},{t:'核心课文 5–8',term:2},{t:'核心课文 9–12',term:3},{t:'核心课文 13–16 + 作文 + 复习',term:4}],
-    MA: [{t:'Whole Numbers & Four Operations',term:1},{t:'Fractions',term:1},{t:'Area of Triangle',term:2},{t:'Ratio',term:2},{t:'Volume',term:2},{t:'Decimals',term:3},{t:'Percentage',term:3},{t:'Average & Rate',term:3},{t:'Angles',term:4},{t:'Triangles & Quadrilaterals',term:4},{t:'Nets',term:4}],
-    SC: [{t:'Cells',term:1},{t:'Plant & Human Reproductive Systems',term:1},{t:'Water & Changes of State',term:2},{t:'Electrical Systems',term:2},{t:'Forces',term:3},{t:'Energy (forms & conversion)',term:3},{t:'Revision (all P5)',term:4}]
-  },
-  P6: {
-    EN: [{t:'Units 1–3',term:1},{t:'Units 4–6',term:2},{t:'Comprehension & composition intensive',term:3},{t:'PSLE revision',term:4}],
-    CL: [{t:'核心课文 1–4',term:1},{t:'核心课文 5–8',term:2},{t:'作文 + 理解 intensive',term:3},{t:'PSLE 复习',term:4}],
-    MA: [{t:'Algebra',term:1},{t:'Fractions',term:1},{t:'Ratio',term:1},{t:'Percentage',term:2},{t:'Speed',term:2},{t:'Circles',term:2},{t:'Pie Charts',term:3},{t:'Area & Perimeter',term:3},{t:'Volume & Solid Figures',term:3},{t:'PSLE revision',term:4}],
-    SC: [{t:'Energy (forms, sources, conversion)',term:1},{t:'Forces',term:2},{t:'Electrical Systems',term:2},{t:'Adaptations',term:3},{t:'Interactions & Food Chains',term:3},{t:"Man's Impact on the Environment",term:3},{t:'PSLE revision',term:4}]
-  }
+  P1: { EN:[], CL: clLessons(19),
+    MA: chs(['Numbers to 10','Number Bonds','Addition & Subtraction within 20','Numbers to 100','Addition & Subtraction within 100','Multiplication','Division','Length','Time','Money','Picture Graphs','Shapes & Patterns']),
+    SC: [] },
+  P2: { EN:[], CL: clLessons(19),
+    MA: chs(['Numbers to 1000','Addition and Subtraction Within 1000','Length','Multiplication and Division','Multiplication Tables of 2, 5 and 10','Mass','Time','Addition and Subtraction (Word Problems)','Multiplication Tables of 3 and 4','Money','Fractions','Volume','Picture Graphs','Shapes']),
+    SC: [] },
+  P3: { EN:[], CL: clLessons(19),
+    MA: chs(['Numbers to 10 000','Addition and Subtraction','Money','Multiplication Tables of 6, 7, 8 and 9','Multiplication and Division','More Word Problems','Bar Graphs','Angles','Perpendicular and Parallel Lines','Fractions','Length, Mass and Volume','Area and Perimeter','Time']),
+    SC: chs(['Diversity of Living and Non-living Things','Classification of Living Things','Diversity of Materials','Life Cycles of Plants','Life Cycles of Animals','Properties of Magnets','Making and Using Magnets']) },
+  P4: { EN:[], CL: clLessons(19),
+    MA: chs(['Numbers to 100,000','Factors and Multiples','Multiplication and Division','Fractions','Mixed Numbers and Improper Fractions','Decimals','Angles','Squares and Rectangles','Symmetry','Area and Perimeter','Time','Tables and Line Graphs']),
+    SC: chs(['Matter (three states)','Heat and Temperature','Light and Shadows','Magnets','Plant and Human Systems']) },
+  P5: { EN:[], CL: clLessons(19),
+    MA: chs(['Whole Numbers and Four Operations','Fractions','Area of Triangle','Ratio','Volume','Decimals','Percentage','Average and Rate','Angles','Triangles and Quadrilaterals','Nets']),
+    SC: chs(['Cells','Plant and Human Reproductive Systems','Water and Changes of State','Electrical Systems','Forces','Energy (forms and conversion)']) },
+  P6: { EN:[], CL: clLessons(19),
+    MA: chs(['Algebra','Fractions','Ratio','Percentage','Speed','Circles','Pie Charts','Area and Perimeter','Volume and Solid Figures']),
+    SC: chs(['Energy (forms, sources, conversion)','Forces','Electrical Systems','Adaptations','Interactions and Food Chains',"Man's Impact on the Environment"]) }
 };
 // fill a kid's syllabus from the library; by default only fills subjects that are still empty
 function seedSyllabusForKid(kid, overwrite){
@@ -727,6 +719,8 @@ function loadS(){
   catch(e){ S = defaultSettings(); }
   if(!S.kids) S.kids=[];
   S.kids.forEach(migrateKid);
+  // one-time: drop the old English chapter syllabus (English isn't chapter-based)
+  if(!S.enSylCleared){ S.kids.forEach(k=>{ if(k.syllabus) delete k.syllabus.EN; }); S.enSylCleared=true; }
   try{ LOG = JSON.parse(localStorage.getItem(LOG_KEY)) || []; }catch(e){ LOG=[]; }
 }
 function saveS(){ localStorage.setItem(LS_KEY, JSON.stringify(S)); }
@@ -1805,61 +1799,75 @@ function parseSyllabus(raw){
     return {t:l, term:null};
   });
 }
+let SYL_EDIT = null, SYL_SUBJ = null;
 function openSyllabus(subject){
   const k = activeKid();
-  const list = (k.syllabus && k.syllabus[subject]) || [];
-  const text = list.map(c=>(c.term?('T'+c.term+' '):'')+c.t).join('\n');
+  SYL_SUBJ = subject;
+  const existing = (k.syllabus && k.syllabus[subject]) || [];
+  const src = existing.length ? existing : ((CURRICULUM[k.level]&&CURRICULUM[k.level][subject])||[]);
+  SYL_EDIT = src.map(c=>({t:c.t, term:c.term||null}));
+  renderSyllabusEditor();
+}
+function renderSyllabusEditor(){
+  const subject = SYL_SUBJ, k = activeKid();
+  const rows = SYL_EDIT.map((c,i)=>`
+    <div class="sylrow">
+      <div class="sylname">${esc(c.t)}</div>
+      <div class="sylterms">
+        ${[1,2,3,4].map(t=>`<button type="button" class="chip xs ${c.term===t?'on':''}" data-t="${t}" onclick="setSylTerm(${i},${t},this)">T${t}</button>`).join('')}
+        <button type="button" class="chip xs sylx" onclick="removeSylRow(${i})">✕</button>
+      </div>
+    </div>`).join('');
+  const hasDefault = CURRICULUM[k.level] && CURRICULUM[k.level][subject] && CURRICULUM[k.level][subject].length;
   const m = $('modal');
   m.innerHTML = `<div class="mback" onclick="closeModal()"></div>
   <div class="msheet"><div class="grab"></div>
-    <h3 style="font-size:17px;font-weight:800;margin-bottom:6px">${esc(subjName(subject))} — year chapters</h3>
-    <div class="small muted" style="margin-bottom:10px">💡 <b>No need to type!</b> Snap the textbook contents page → press-and-hold → <b>Select All → Copy</b> (Live Text) → paste below → <b>✨ Clean up</b>. It strips page numbers & clutter into tidy chapters. Then add a <b>T1–T4</b> tag if you like (e.g. <b>T3 Fractions</b>) so the plan surfaces the right term now.</div>
-    <div class="field"><textarea id="syl_text" style="min-height:190px" placeholder="Paste the contents page here, then tap ✨ Clean up.&#10;&#10;Or type: one chapter per line, optional T1–T4 tag.">${esc(text)}</textarea></div>
-    <button class="btn sec" onclick="cleanSyllabus()">✨ Clean up pasted text</button>
-    <div class="chiprow" style="margin-top:12px">
-      <span class="small muted" style="align-self:center">Tag all lines:</span>
-      ${[1,2,3,4].map(t=>`<button class="chip sm" onclick="tagAllTerms(${t})">T${t}</button>`).join('')}
-      <button class="chip sm" onclick="tagAllTerms(0)">clear</button>
+    <h3 style="font-size:17px;font-weight:800;margin-bottom:4px">${esc(subjName(subject))} — year chapters</h3>
+    <div class="small muted" style="margin-bottom:12px">Tap <b>T1–T4</b> on each chapter to set which term it's taught in. Leave blank if unsure — it still shows up in the plan.</div>
+    <div class="syllist">${rows || '<div class="small muted" style="padding:8px 0">No chapters yet — add one below or load the default list.</div>'}</div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <input type="text" id="syl_add" placeholder="Add a chapter…" style="flex:1" onkeydown="if(event.key==='Enter'){addSylRow();event.preventDefault();}">
+      <button type="button" class="chip" onclick="addSylRow()">＋ Add</button>
     </div>
-    <button class="btn" style="margin-top:14px" onclick="saveSyllabus('${subject}')">💾 Save chapters</button>
+    ${hasDefault?`<button class="btn ghost" style="margin-top:10px" onclick="resetSylDefault()">↺ Reset to the ${esc(k.level)} default list</button>`:''}
+    <details style="margin-top:10px"><summary class="small muted" style="cursor:pointer;padding:4px 0">＋ Paste from a textbook contents page (Live Text)</summary>
+      <textarea id="syl_text" style="min-height:110px;margin-top:8px" placeholder="Paste the contents page here…"></textarea>
+      <button type="button" class="btn sec" style="margin-top:8px" onclick="importPastedSyllabus()">✨ Clean up &amp; add</button>
+    </details>
+    <button class="btn" style="margin-top:14px" onclick="saveSyllabus()">💾 Save chapters</button>
   </div>`;
   m.classList.add('open');
 }
-function cleanSyllabus(){
-  const ta = $('syl_text'); if(!ta) return;
-  const seen = new Set(); const out = [];
+function setSylTerm(i, t, el){
+  SYL_EDIT[i].term = (SYL_EDIT[i].term===t) ? null : t;
+  const row = el.closest('.sylrow');
+  if(row) row.querySelectorAll('.chip[data-t]').forEach(c=>c.classList.toggle('on', +c.dataset.t===SYL_EDIT[i].term));
+}
+function removeSylRow(i){ SYL_EDIT.splice(i,1); renderSyllabusEditor(); }
+function addSylRow(){ const el=$('syl_add'); const v=(el&&el.value||'').trim(); if(!v) return; SYL_EDIT.push({t:v, term:null}); renderSyllabusEditor(); }
+function resetSylDefault(){ const k=activeKid(); SYL_EDIT = ((CURRICULUM[k.level]&&CURRICULUM[k.level][SYL_SUBJ])||[]).map(c=>({t:c.t,term:c.term||null})); renderSyllabusEditor(); toast('↺ Loaded the default list'); }
+function importPastedSyllabus(){
+  const ta=$('syl_text'); if(!ta||!ta.value.trim()){ toast('Paste the contents page first'); return; }
+  const have = new Set(SYL_EDIT.map(c=>c.t.toLowerCase()));
+  let added=0;
   ta.value.split('\n').forEach(raw=>{
-    let l = raw.trim();
-    if(!l) return;
-    l = l.replace(/[.·•\s]{2,}\d{1,3}\s*$/,'')      // dot leaders + page number
-         .replace(/\s+\d{1,3}\s*$/,'')              // trailing page number
-         .replace(/^\s*(?:chapter|unit|ch|lesson|topic|第)\s*\d+\s*[:.\-–—、]?\s*/i,'') // "Chapter 3:"
-         .replace(/^\s*\d{1,2}\s*[.):\-–—]\s*/,'')  // "3." / "3)"
-         .replace(/^[\-–—•*·]\s*/,'')               // bullets
-         .trim();
-    // detect a term hint like "Term 3" and convert to T3 prefix
-    const tm = l.match(/\bterm\s*([1-4])\b/i);
-    if(tm){ l = l.replace(/\bterm\s*[1-4]\b[:\-–—\s]*/i,'').trim(); l = 'T'+tm[1]+' '+l; }
-    const key = l.toLowerCase().replace(/^t[1-4]\s+/,'');
-    if(l.length<3 || /^(contents|table of contents|page|index|syllabus)$/i.test(key) || seen.has(key)) return;
-    seen.add(key); out.push(l);
+    let l=raw.trim(); if(!l) return;
+    l = l.replace(/[.·•\s]{2,}\d{1,3}\s*$/,'').replace(/\s+\d{1,3}\s*$/,'')
+         .replace(/^\s*(?:chapter|unit|ch|lesson|topic)\s*\d+\s*[:.\-–—、]?\s*/i,'')
+         .replace(/^\s*\d{1,2}\s*[.):\-–—]\s*/,'').replace(/^[\-–—•*·]\s*/,'').trim();
+    let term=null; const tm=l.match(/\bt(?:erm)?\s*([1-4])\b/i);
+    if(tm){ term=+tm[1]; l=l.replace(/\bt(?:erm)?\s*[1-4]\b[:\-–—\s]*/i,'').trim(); }
+    const key=l.toLowerCase();
+    if(l.length<2 || /^(contents|table of contents|page|index|syllabus)$/i.test(key) || have.has(key)) return;
+    have.add(key); SYL_EDIT.push({t:l, term}); added++;
   });
-  ta.value = out.join('\n');
-  toast(out.length ? `✨ Cleaned into ${out.length} chapters` : 'Nothing to clean');
+  renderSyllabusEditor();
+  toast(added?`✨ Added ${added} chapters — now tag their terms`:'Nothing new to add');
 }
-function tagAllTerms(t){
-  const ta = $('syl_text'); if(!ta) return;
-  ta.value = ta.value.split('\n').map(l=>{
-    l = l.trim(); if(!l) return '';
-    l = l.replace(/^t[1-4]\s+/i,'');           // remove existing tag
-    return t ? ('T'+t+' '+l) : l;
-  }).filter(Boolean).join('\n');
-}
-function saveSyllabus(subject){
-  const k = activeKid();
-  if(!k.syllabus) k.syllabus = {};
-  k.syllabus[subject] = parseSyllabus($('syl_text').value);
-  saveS(); closeModal(); toast('✅ Chapters saved — now in the plan'); render();
+function saveSyllabus(){
+  const k=activeKid(); if(!k.syllabus) k.syllabus={};
+  k.syllabus[SYL_SUBJ] = (SYL_EDIT||[]).filter(c=>c.t && c.t.trim()).map(c=>({t:c.t.trim(), term:c.term||null}));
+  saveS(); closeModal(); toast('✅ Chapters saved'); render();
 }
 
 /* ----- exam-notice importer (paste → find dates + subjects + topics) ----- */
