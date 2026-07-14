@@ -401,6 +401,22 @@ input,select,textarea{font:inherit;color:inherit}
 .word.big{font-size:19px;padding:12px 18px;border-radius:13px}
 .word.done{background:var(--green-soft);color:var(--green);border-color:var(--green)}
 .word.done::before{content:'✓ '}
+/* 听写 flip-cards: prompt on the front, answer revealed on tap */
+.pgroup{margin:10px 0 14px}
+.pgroup h4{font-size:14px;font-weight:800;margin-bottom:2px}
+.pgroup .ph{font-size:12px;color:var(--ink2);margin-bottom:8px}
+.pcards{display:flex;flex-wrap:wrap;gap:9px}
+.pcard{position:relative;min-width:74px;padding:11px 14px;border-radius:13px;background:var(--card);
+  box-shadow:var(--shadow);border:1.5px solid transparent;text-align:center;line-height:1.25}
+.pcard .q{display:block;font-weight:800;font-size:23px}
+.pcard.recog .q{font-size:30px}
+.pcard .a{display:none;font-size:14px;font-weight:700;color:var(--plum);margin-top:3px}
+.pcard .hint{display:block;font-size:11px;color:var(--ink2);margin-top:3px;font-weight:600}
+.pcard.shown .a{display:block}
+.pcard.shown .hint{display:none}
+.pcard.done{background:var(--green-soft);border-color:var(--green)}
+.pcard.done .a{color:var(--green)}
+.pcard .say{position:absolute;top:3px;right:5px;font-size:13px;opacity:.5}
 .prog{font-size:13.5px;font-weight:800;color:var(--ink2);margin-bottom:8px}
 
 /* ---------- tabbar ---------- */
@@ -501,7 +517,7 @@ input,select,textarea{font:inherit;color:inherit}
    the rename). Calendar auto-plan · subject mix · chapters · streaks.
    ================================================================ */
 
-const VERSION = '0.17.0';
+const VERSION = '0.18.0';
 const LS_KEY  = 'migistudy_settings_v1';
 const LOG_KEY = 'migistudy_log_v1';
 const SUBJECTS = [
@@ -2473,13 +2489,55 @@ function smartExtract(){
   if(!text.trim()){ toast('Paste the copied text first'); return; }
   const hasCJK = /[㐀-鿿]/.test(text);
   const toks = []; const seen = new Set();
-  const add = (t)=>{ t=(t||'').trim(); if(!t) return; const key=t.toLowerCase(); if(!seen.has(key)){ seen.add(key); toks.push({t, keep:false}); } };
+  const add = (t, py, mode)=>{ t=(t||'').trim(); if(!t) return; const key=t.toLowerCase();
+    if(!seen.has(key)){ seen.add(key); toks.push({t, py:py||'', mode:mode||'write', keep:false}); } };
   if(hasCJK){
-    // Chinese 听写: drop the pinyin (latin) + numbers; keep each 词语/句子 as its own chip.
-    text.split(/\s+/).forEach(part=>{
-      let s = part.replace(/[^㐀-鿿，。！？：、；“”‘’]/g,'');     // keep CJK + Chinese punctuation only
-      s = s.replace(/^[，。！？：、；“”‘’]+/,'').replace(/[，。！？：、；“”‘’]+$/,'');
-      if(/[㐀-鿿]/.test(s)) add(s);
+    /* Chinese 听写. The sheet has TWO sections and they're tested in opposite directions:
+         我会写 — she hears the word and writes the 汉字   → prompt with the pinyin, answer is the 字
+         我会认 — she's shown the 字 and writes the pinyin → prompt with the 字, answer is the pinyin
+       So we KEEP the pinyin (we used to throw it away) and pair it to each item. In the OCR, a line
+       of pinyin sits directly above its line of characters; the 我会写 rows are numbered and the
+       我会认 grid is not, and both section headers are printed on the sheet — so we track the header
+       and fall back to the numbering when it's missing. */
+    const isPY  = s => /[a-zA-Zāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜü]/.test(s) && !/[㐀-鿿]/.test(s);
+    const cjkOf = s => s.replace(/[^㐀-鿿，。！？：、；“”‘’？]/g,'');
+    // Does the sheet actually print the section headers? If so we can be strict and ignore all the
+    // page furniture (school name, 姓名/班级/日期, the footer). If not, fall back to the old
+    // everything-goes behaviour so other schools' sheets still work.
+    const sectioned = /我会[写认]|我會[寫認]/.test(text);
+    let sect = sectioned ? null : 'write', pend = null;
+    text.split('\n').forEach(raw=>{
+      const line = (raw||'').trim(); if(!line) return;
+      if(line.includes('我会认') || line.includes('我會認')){ sect='recog'; pend=null; return; }
+      if(line.includes('我会写') || line.includes('我會寫')){ sect='write'; pend=null; return; }
+      if(isPY(line)){ pend = line.split(/\s+/).filter(t=>/[a-zA-Zāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜü]/.test(t)); return; }
+      if(sect === null) return;                               // header/title block, before 我会写
+      if(!/[㐀-鿿]/.test(line)) return;                       // a stray number / date line
+      const numbered = /^\s*\d{1,2}\s*[.、)]/.test(line);
+      // in a sectioned sheet the 我会写 items are always numbered and the 我会认 rows always have a
+      // pinyin line above them — so anything else on the page (the footer, a stray title) is noise.
+      if(sectioned && sect==='write' && !numbered) return;
+      if(sect==='recog' && !numbered && !pend) return;
+      // the 我会写 table is TWO columns, and Live Text often reads a row straight across —
+      // "1. 大象  6. 我们来玩布娃娃吧。" — so split a line back into its numbered items.
+      const segs = numbered
+        ? line.split(/(?=\s\d{1,2}\s*[.、)])/).filter(s=>/[㐀-鿿]/.test(s))
+        : [line];
+      segs.forEach(seg=>{
+        const body = cjkOf(seg.replace(/^\s*\d{1,2}\s*[.、)]\s*/,''));
+        if(!body) return;
+        const chars = body.replace(/[，。！？：、；“”‘’]/g,'').split('');
+        if(sect==='recog' && !numbered){
+          // a grid row: every character is its own item, zipped 1:1 with the pinyin above it
+          chars.forEach((ch,i)=> add(ch, (pend && pend.length===chars.length) ? pend[i] : '', 'recog'));
+        } else {
+          // a 我会写 row: the whole 词语/句子 is one item, prompted by its pinyin. If the columns got
+          // merged we can't tell whose pinyin is whose, so we drop it — 🔊 read-aloud still works,
+          // and that's the truer prompt for 听写 anyway.
+          add(body, (pend && segs.length===1) ? pend.join(' ') : '', 'write');
+        }
+      });
+      pend = null;
     });
   } else {
     // English: every word is a candidate — you tap the ones to keep (the underlined ones).
@@ -2503,12 +2561,18 @@ function togglePickTok(i, el){
   if(b) b.textContent = '✓ Use these ' + PENDING.pickTokens.filter(x=>x.keep).length + ' words';
 }
 function usePicked(){
-  const kept = PENDING.pickTokens.filter(t=>t.keep).map(t=>t.t);
+  const kept = PENDING.pickTokens.filter(t=>t.keep);
   if(!kept.length){ toast('Tap at least one word to keep'); return; }
-  PENDING.words = kept.join('\n');
+  PENDING.words = kept.map(t=>t.t).join('\n');
+  PENDING.py = {}; PENDING.mode = {};
+  kept.forEach(t=>{                                  // remember the pinyin and which way it's tested
+    if(t.py) PENDING.py[t.t] = t.py;
+    if(t.mode === 'recog') PENDING.mode[t.t] = 'recog';
+  });
   PENDING.pickTokens = null;
   render();
-  toast(`✅ ${kept.length} words in the list`);
+  const nr = kept.filter(t=>t.mode==='recog').length;
+  toast(`✅ ${kept.length} in the list${nr?` (${nr} 我会认 → pinyin)`:''}`);
 }
 function cancelPick(){ PENDING.pickTokens = null; render(); }
 
@@ -2552,12 +2616,15 @@ function captureFormHTML(){
     </div>
     ${p.type==='spelling' ? (p.pickTokens ? `
     <div class="field"><label>Tap the words to keep</label>
-      <div class="small muted" style="margin-bottom:8px">Tap each spelling / 听写 word to keep (the underlined ones on the sheet). Pinyin &amp; numbers are already stripped out.</div>
+      <div class="small muted" style="margin-bottom:8px">Tap each spelling / 听写 word to keep (the underlined ones on the sheet). ${p.pickTokens.some(t=>t.mode==='recog')?'The <b>我会认</b> characters are kept separately — those get tested <b>字 → pinyin</b>.':'Numbers are stripped out.'}</div>
       <div style="display:flex;gap:8px;margin-bottom:10px">
         <button class="chip sm" onclick="pickAll(true)">✓ Select all</button>
         <button class="chip sm" onclick="pickAll(false)">✕ Clear</button>
       </div>
-      <div class="chiprow">${p.pickTokens.map((tk,i)=>`<button class="chip ${tk.keep?'on':''}" onclick="togglePickTok(${i},this)">${esc(tk.t)}</button>`).join('')}</div>
+      ${['write','recog'].filter(sec=>p.pickTokens.some(t=>t.mode===sec)).map(sec=>`
+        ${p.pickTokens.some(t=>t.mode==='recog') ? `<div class="small muted" style="margin:8px 0 5px;font-weight:800">${sec==='recog'?'🔤 我会认 — 字 → pinyin':'✍️ 我会写 — hear it → write the 字'}</div>`:''}
+        <div class="chiprow">${p.pickTokens.map((tk,i)=> tk.mode!==sec ? '' :
+          `<button class="chip ${tk.keep?'on':''}" onclick="togglePickTok(${i},this)">${esc(tk.t)}${tk.py?`<span class="small muted" style="font-weight:600"> ${esc(tk.py)}</span>`:''}</button>`).join('')}</div>`).join('')}
       <button class="btn" id="usePickedBtn" style="margin-top:14px" onclick="usePicked()">✓ Use these ${p.pickTokens.filter(x=>x.keep).length} words</button>
       <button class="btn ghost" style="margin-top:8px" onclick="cancelPick()">Back to typing</button>
     </div>` : `
@@ -2581,13 +2648,16 @@ async function saveCapture(){
   if(!p.subject){ toast('Pick a subject'); return; }
   if(!p.type){ toast('Pick a type'); return; }
   const words = (p.words||'').split('\n').map(w=>w.trim()).filter(Boolean);
+  // keep only the pinyin / 我会认 flags for words that actually survived (she may have edited the list)
+  const py = {}, mode = {};
+  words.forEach(w=>{ if(p.py && p.py[w]) py[w]=p.py[w]; if(p.mode && p.mode[w]) mode[w]=p.mode[w]; });
   let cap;
   if(p.editingId){
     cap = CAPS.find(c=>c.id===p.editingId);
-    Object.assign(cap, {kidId:p.kidId, subject:p.subject, type:p.type, testDate:p.testDate||null, note:p.note.trim(), words});
+    Object.assign(cap, {kidId:p.kidId, subject:p.subject, type:p.type, testDate:p.testDate||null, note:p.note.trim(), words, py, mode});
   }else{
     cap = { id:uid(), kidId:p.kidId, subject:p.subject, type:p.type,
-      testDate:p.testDate||null, note:p.note.trim(), words,
+      testDate:p.testDate||null, note:p.note.trim(), words, py, mode,
       image:p.imageBlob, thumb:p.thumbBlob, archived:false, createdAt:Date.now() };
     CAPS.push(cap);
   }
@@ -2634,7 +2704,8 @@ function editCapture(id){
   PENDING = { editingId:id, imageBlob:c.image, thumbBlob:c.thumb,
     previewURL:URL.createObjectURL(c.image),
     kidId:c.kidId, subject:c.subject, type:c.type,
-    testDate:c.testDate||'', words:(c.words||[]).join('\n'), note:c.note||'' };
+    testDate:c.testDate||'', words:(c.words||[]).join('\n'), note:c.note||'',
+    py:Object.assign({}, c.py||{}), mode:Object.assign({}, c.mode||{}) };
   TAB='capture'; render(); window.scrollTo(0,0);
 }
 async function toggleArchive(id){
@@ -2654,10 +2725,70 @@ function askDelete(id){
 
 /* ---------------- PRACTICE (tick off studied words) ---------------- */
 function tickCount(c){ return (c.words||[]).filter(w=>c.ticks && c.ticks[w]).length; }
+function sayZh(txt){
+  // 听写 is a LISTENING test — let the app read the word out instead of a parent having to
+  try{
+    if(!window.speechSynthesis) return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(txt);
+    u.lang = 'zh-CN'; u.rate = 0.75;
+    const v = speechSynthesis.getVoices().find(v=>/^zh/i.test(v.lang));
+    if(v) u.voice = v;
+    speechSynthesis.speak(u);
+  }catch(e){}
+}
+function sayCard(ev, capId, i){
+  ev.stopPropagation();                     // tapping 🔊 reads it out; it must NOT flip the card
+  const c = CAPS.find(x=>x.id===capId);
+  if(c && c.words && c.words[i]) sayZh(c.words[i]);
+}
+function hasPinyin(c){ return !!(c.py && Object.keys(c.py).length); }
 function tickableWords(c, big){
-  return `<div class="wordlist">${c.words.map((w,i)=>
-    `<button class="word ${big?'big':''} ${c.ticks&&c.ticks[w]?'done':''}" onclick="toggleTick('${c.id}',${i},this)">${esc(w)}</button>`
-  ).join('')}</div>`;
+  // A 听写 sheet with pinyin gets FLIP-CARDS, each section tested the way school tests it:
+  //   我会写 → prompt is the pinyin (or 🔊), she writes the 汉字, taps to check
+  //   我会认 → prompt is the 汉字,        she writes the pinyin, taps to check
+  // Anything else (English spelling, a hand-typed list) keeps the plain tick-off chips.
+  if(!hasPinyin(c)) {
+    return `<div class="wordlist">${c.words.map((w,i)=>
+      `<button class="word ${big?'big':''} ${c.ticks&&c.ticks[w]?'done':''}" onclick="toggleTick('${c.id}',${i},this)">${esc(w)}</button>`
+    ).join('')}</div>`;
+  }
+  const py = c.py||{}, md = c.mode||{};
+  const sections = [
+    {k:'write', title:'✍️ 我会写', hint:'Listen / read the pinyin → write the 汉字. Tap to check.'},
+    {k:'recog', title:'🔤 我会认', hint:'See the 字 → write the pinyin. Tap to check.'}
+  ];
+  return sections.map(sec=>{
+    const items = c.words.map((w,i)=>({w,i})).filter(x=> (md[x.w]==='recog' ? 'recog' : 'write') === sec.k);
+    if(!items.length) return '';
+    return `<div class="pgroup"><h4>${sec.title}</h4><div class="ph">${sec.hint}</div>
+      <div class="pcards">${items.map(({w,i})=>{
+        const done = c.ticks && c.ticks[w] ? 'done' : '';
+        const p = py[w] || '';
+        return sec.k==='recog'
+          ? `<button class="pcard recog ${done}" onclick="cardTap('${c.id}',${i},this)">
+               <span class="say" onclick="sayCard(event,'${c.id}',${i})">🔊</span>
+               <span class="q">${esc(w)}</span>
+               <span class="hint">pinyin?</span><span class="a">${esc(p||'—')}</span></button>`
+          // NEVER show the 汉字 on the front of a 我会写 card — that's the answer. If the pinyin
+          // didn't survive the scan, the prompt is purely the read-aloud, which is what 听写 is anyway.
+          : `<button class="pcard ${done}" onclick="cardTap('${c.id}',${i},this)">
+               <span class="say" onclick="sayCard(event,'${c.id}',${i})">🔊</span>
+               <span class="q" style="font-size:${p ? (p.length>14?'14px':'18px') : '20px'}">${p?esc(p):'🔊 listen'}</span>
+               <span class="hint">${p?'写?':'tap 🔊 → write it'}</span>
+               <span class="a" style="font-size:${w.length>6?'15px':'20px'}">${esc(w)}</span></button>`;
+      }).join('')}</div></div>`;
+  }).join('');
+}
+function cardTap(capId, i, el){
+  // first tap reveals the answer, second tap ticks it off
+  if(!el.classList.contains('shown')){
+    el.classList.add('shown');
+    const c = CAPS.find(x=>x.id===capId);
+    if(c && (c.mode||{})[c.words[i]] !== 'recog') sayZh(c.words[i]);   // 我会写: hear it as you check
+    return;
+  }
+  toggleTick(capId, i, el);
 }
 async function toggleTick(capId, i, el){
   const c = CAPS.find(x=>x.id===capId);
