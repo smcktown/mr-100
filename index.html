@@ -517,7 +517,7 @@ input,select,textarea{font:inherit;color:inherit}
    the rename). Calendar auto-plan · subject mix · chapters · streaks.
    ================================================================ */
 
-const VERSION = '0.19.1';
+const VERSION = '0.20.0';
 const LS_KEY  = 'migistudy_settings_v1';
 const LOG_KEY = 'migistudy_log_v1';
 const SUBJECTS = [
@@ -2508,8 +2508,11 @@ function smartExtract(){
   if(!text.trim()){ toast('Paste the copied text first'); return; }
   const hasCJK = /[㐀-鿿]/.test(text);
   const toks = []; const seen = new Set();
-  const add = (t, py, mode)=>{ t=(t||'').trim(); if(!t) return; const key=t.toLowerCase();
-    if(!seen.has(key)){ seen.add(key); toks.push({t, py:py||'', mode:mode||'write', keep:false}); } };
+  // Chinese items come in PRE-SELECTED — a 听写 sheet is "keep everything", and making her tap 28
+  // chips is how items quietly go missing. (English stays opt-in: only the underlined words count.)
+  const add = (t, py, mode, keep)=>{ t=(t||'').trim(); if(!t) return; const key=t.toLowerCase();
+    if(!seen.has(key)){ seen.add(key); toks.push({t, py:py||'', mode:mode||'write', keep:!!keep}); } };
+  const addZh = (t, py, mode)=> add(t, py, mode, true);
   if(hasCJK){
     /* Chinese 听写. The sheet tests two things in OPPOSITE directions:
          我会写 — she hears the word and writes the 汉字   → prompt with the pinyin, answer is the 字
@@ -2526,6 +2529,30 @@ function smartExtract(){
        (zhāng → "zhãng", bǎo → "bdo", lǐ → "ii") and for 我会认 the pinyin is the answer. */
     const isPY  = s => /[a-zA-Zāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜüãẽĩõũăĕĭŏŭ]/.test(s) && !/[㐀-鿿]/.test(s);
     const cjkOf = s => s.replace(/[^㐀-鿿，。！？：、；“”‘’]/g,'');
+
+    /* ESCAPE HATCH — an explicit, unambiguous format that doesn't depend on the scan at all:
+         写: 大象          (or W:)   → she writes the 汉字
+         认: 纸 机 块 跟   (or R:)   → she writes the pinyin; a whole row can go on one line
+       If ANY line is tagged this way we use only the tagged lines and ignore the OCR guessing.
+       That way a mangled Live Text scan can be fixed by hand (or handed over pre-cleaned) and
+       imported exactly, instead of fighting the parser. */
+    const TAG = /^\s*(写|認|认|W|R)\s*[:：]\s*(.+)$/i;
+    if(text.split('\n').some(l=>TAG.test(l))){
+      text.split('\n').forEach(raw=>{
+        const m = TAG.exec((raw||'').trim()); if(!m) return;
+        const recog = /认|認|R/i.test(m[1]);
+        const body = m[2].trim();
+        if(recog){
+          // every character on the line is its own 我会认 item (spaces optional)
+          cjkOf(body).replace(/[，。！？：、；“”‘’]/g,'').split('').forEach(ch=> addZh(ch, pyOf(ch), 'recog'));
+        } else {
+          const w = cjkOf(body);
+          if(w) addZh(w, pyOfWord(w), 'write');
+        }
+      });
+      if(toks.length){ PENDING.pickTokens = toks.slice(0,200); render(); return; }
+    }
+
     let pend = null;
     text.split('\n').forEach(raw=>{
       const line = (raw||'').trim(); if(!line) return;
@@ -2536,9 +2563,9 @@ function smartExtract(){
       if(!body || !pend){ pend = null; return; }                            // no pinyin above → not an item
       const chars = body.replace(/[，。！？：、；“”‘’]/g,'');
       if(chars.length === 1){
-        add(chars, pyOf(chars) || pend[0] || '', 'recog');                  // 我会认 — she writes the pinyin
+        addZh(chars, pyOf(chars) || pend[0] || '', 'recog');                // 我会认 — she writes the pinyin
       } else {
-        add(body, pyOfWord(body) || pend.join(' '), 'write');               // 我会写 — she writes the 汉字
+        addZh(body, pyOfWord(body) || pend.join(' '), 'write');             // 我会写 — she writes the 汉字
       }
       pend = null;
     });
@@ -2582,6 +2609,13 @@ function usePicked(){
   render();
   const nr = kept.filter(t=>t.mode==='recog').length;
   toast(`✅ ${kept.length} in the list${nr?` (${nr} 我会认 → pinyin)`:''}`);
+}
+function togglePickMode(i){
+  // a misfiled item is one tap to re-file — the scan doesn't have to be perfect
+  const t = PENDING.pickTokens[i];
+  t.mode = (t.mode === 'recog') ? 'write' : 'recog';
+  t.py = (t.mode === 'recog') ? (pyOf(t.t) || t.py) : (pyOfWord(t.t) || t.py);
+  render();
 }
 function cancelPick(){ PENDING.pickTokens = null; render(); }
 
@@ -2633,7 +2667,10 @@ function captureFormHTML(){
       ${['write','recog'].filter(sec=>p.pickTokens.some(t=>t.mode===sec)).map(sec=>`
         ${p.pickTokens.some(t=>t.mode==='recog') ? `<div class="small muted" style="margin:8px 0 5px;font-weight:800">${sec==='recog'?'🔤 我会认 — 字 → pinyin':'✍️ 我会写 — hear it → write the 字'}</div>`:''}
         <div class="chiprow">${p.pickTokens.map((tk,i)=> tk.mode!==sec ? '' :
-          `<button class="chip ${tk.keep?'on':''}" onclick="togglePickTok(${i},this)">${esc(tk.t)}${tk.py?`<span class="small muted" style="font-weight:600"> ${esc(tk.py)}</span>`:''}</button>`).join('')}</div>`).join('')}
+          `<span style="display:inline-flex;align-items:center;gap:2px">
+             <button class="chip ${tk.keep?'on':''}" onclick="togglePickTok(${i},this)">${esc(tk.t)}${tk.py?`<span class="small muted" style="font-weight:600"> ${esc(tk.py)}</span>`:''}</button>
+             <button class="chip sm" title="Move to the other section" style="padding:4px 6px;opacity:.55" onclick="togglePickMode(${i})">⇄</button>
+           </span>`).join('')}</div>`).join('')}
       <button class="btn" id="usePickedBtn" style="margin-top:14px" onclick="usePicked()">✓ Use these ${p.pickTokens.filter(x=>x.keep).length} words</button>
       <button class="btn ghost" style="margin-top:8px" onclick="cancelPick()">Back to typing</button>
     </div>` : `
@@ -2641,6 +2678,13 @@ function captureFormHTML(){
       <textarea id="f_words" placeholder="Paste EVERYTHING from the photo here — sentences, numbers, all of it — then tap ✨ below.&#10;&#10;Or type the words, one per line." oninput="PENDING.words=this.value">${esc(p.words)}</textarea>
       <button class="btn sec" style="margin-top:8px" onclick="smartExtract()">✨ Find the words for me</button>
       <div class="small muted" style="margin-top:7px">💡 <b>Press and hold the photo above → Select All → Copy</b> (iPhone Live Text), paste the whole mess here, tap ✨ — the app picks out the spelling words and you fix any misses with a tap.</div>
+      <details style="margin-top:8px"><summary class="small muted" style="cursor:pointer;padding:3px 0">🀄 Live Text mangled the 听写 sheet? Type it exactly instead</summary>
+        <div class="small muted" style="margin-top:6px">Tag the lines and the app takes them <b>exactly</b> — no guessing, and the pinyin is filled in for you:
+        <pre style="margin-top:6px;padding:8px;border-radius:9px;background:var(--card);overflow-x:auto;font-size:12px;line-height:1.5">写: 大象
+写: 我们来玩布娃娃吧。
+认: 纸 机 块 跟 棋 搭</pre>
+        <b>写</b> = she writes the 汉字 · <b>认</b> = she writes the pinyin (put a whole row on one line).</div>
+      </details>
     </div>`):''}
     <div class="field"><label>Note (optional)</label>
       <input type="text" id="f_note" placeholder="e.g. 听写 #12 · Unit 5" value="${esc(p.note)}" oninput="PENDING.note=this.value">
