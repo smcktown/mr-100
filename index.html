@@ -501,7 +501,7 @@ input,select,textarea{font:inherit;color:inherit}
    the rename). Calendar auto-plan · subject mix · chapters · streaks.
    ================================================================ */
 
-const VERSION = '0.16.0';
+const VERSION = '0.17.0';
 const LS_KEY  = 'migistudy_settings_v1';
 const LOG_KEY = 'migistudy_log_v1';
 const SUBJECTS = [
@@ -923,13 +923,34 @@ function taughtFlags(kid, subject, ds){
     return ++seen <= reached;              // this term: paced by the week we're in
   });
 }
+function chapterCounts(kidId, subject){
+  // how many logged study sessions each chapter has actually had
+  const m = {};
+  LOG.forEach(l=>{ if(l.kidId===kidId && l.subject===subject && l.topic) m[l.topic] = (m[l.topic]||0) + 1; });
+  return m;
+}
+function chooseChapter(pool, kid, subject, turn){
+  // Study the chapter that's had the LEAST attention, so coverage evens out and a newly-unlocked
+  // chapter (0 sessions) gets picked up straight away. Ties break on the subject's turn counter —
+  // Science's 1st, 2nd, 3rd… visit — so an all-square pool still cycles instead of sticking.
+  // (The old picker indexed by the date, which resonated: Science came round every 5th day and had
+  //  5 chapters, so date % 5 landed on the same chapter forever.)
+  const cnt = chapterCounts(kid.id, subject), L = pool.length;
+  let best = pool[0], bestN = Infinity;
+  for(let j=0; j<L; j++){
+    const c = pool[(turn + j) % L], n = cnt[c.t] || 0;
+    if(n < bestN){ bestN = n; best = c; }
+  }
+  return best.t;
+}
 function syllabusPick(kid, subject, ds, dayNum){
   const syl = (kid.syllabus && kid.syllabus[subject]) || [];
   if(!syl.length) return null;
   const term = currentTerm(ds);
   const ok = taughtFlags(kid, subject, ds);
   const auto = !(kid.taughtUpto && typeof kid.taughtUpto[subject] === 'number');
-  const pickFrom = (pool, extra) => Object.assign({t: pool[ dayNum % pool.length ].t, auto}, extra||{});
+  const turn = subjectTurn(kid, subject, ds);
+  const pickFrom = (pool, extra) => Object.assign({t: chooseChapter(pool, kid, subject, turn), auto}, extra||{});
 
   const now = syl.filter((c,i)=> ok[i] && (!c.term || c.term===term));
   if(now.length) return pickFrom(now);
@@ -945,10 +966,9 @@ function syllabusTopic(kid, subject, ds, dayNum){
   const p = syllabusPick(kid, subject, ds, dayNum);
   return p ? p.t : null;
 }
-function rotationSubject(kid, ds){
+function rotationIndex(kid, ds){
   // walk from the anchor counting rotation days — busy/rest/trip days consume
   // nothing, so subjects flow around them instead of being lost
-  const seq = mixSeq(kid);
   let start = kid.plan.anchor || todayStr();
   if(gapDays(start, ds) < 0 || gapDays(start, ds) > 400){
     const d = strToDate(ds); d.setDate(d.getDate()-120); start = dToStr(d);
@@ -959,7 +979,21 @@ function rotationSubject(kid, ds){
     if(reachesRotation(kid, dToStr(d))) n++;
     d.setDate(d.getDate()+1);
   }
-  return seq[n % seq.length];
+  return n;
+}
+function rotationSubject(kid, ds){
+  const seq = mixSeq(kid);
+  return seq[ rotationIndex(kid, ds) % seq.length ];
+}
+function subjectTurn(kid, subject, ds){
+  // which visit this is for THIS subject — Science's 1st, 2nd, 3rd… turn. Derived from the same
+  // rotation counter, so it steps once per actual visit and skipped/busy days don't knock it out.
+  const seq = mixSeq(kid), L = seq.length, n = rotationIndex(kid, ds);
+  const perCycle = seq.filter(s=>s===subject).length;
+  if(!perCycle) return 0;
+  let turn = Math.floor(n / L) * perCycle;
+  for(let i = Math.floor(n/L)*L; i < n; i++) if(seq[i % L] === subject) turn++;
+  return turn;
 }
 function planFor(kid, ds){
   const key = kid.id + '|' + ds;
@@ -1133,7 +1167,15 @@ function doFeed(kidId, subject, isExtra, ev, isPractice){
   if(feedsOn(kidId, todayStr()) >= MAX_FEEDS_PER_DAY){
     toast(`🌟 ${kid.name} studied lots today — come back tomorrow!`); return;
   }
-  LOG.push({id:uid(), date:todayStr(), kidId, subject:subject||null, extra:!!isExtra, practice:!!isPractice, ts:Date.now()});
+  // record WHICH chapter was studied, not just the subject — that's what lets the planner serve the
+  // least-studied chapter next time (and it's the raw material for the future Progress tab).
+  let topic = null;
+  if(subject && !isPractice){
+    const p = planFor(kid, todayStr());
+    topic = (p.kind==='study' && p.subject===subject && p.topic) ? p.topic
+          : syllabusTopic(kid, subject, todayStr(), 0);   // "study a different subject" → its own chapter
+  }
+  LOG.push({id:uid(), date:todayStr(), kidId, subject:subject||null, topic, extra:!!isExtra, practice:!!isPractice, ts:Date.now()});
   saveLOG();
   if(!kid.pet) kid.pet = { sp: pickSpecies(kid), fed:0 };
   const before = petStage(kid.pet.fed);
