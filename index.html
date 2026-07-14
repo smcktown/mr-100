@@ -517,7 +517,7 @@ input,select,textarea{font:inherit;color:inherit}
    the rename). Calendar auto-plan · subject mix · chapters · streaks.
    ================================================================ */
 
-const VERSION = '0.19.0';
+const VERSION = '0.19.1';
 const LS_KEY  = 'migistudy_settings_v1';
 const LOG_KEY = 'migistudy_log_v1';
 const SUBJECTS = [
@@ -2542,6 +2542,12 @@ function smartExtract(){
       }
       pend = null;
     });
+    // A real 我会认 section is a GRID of characters, not a stray one. Some 听写 lists are just
+    // 词语 and have no pinyin-writing section at all (Tyler's may well be one) — and a single
+    // one-character word on such a list must NOT turn into "write the pinyin for this", a test
+    // his school never sets. So only call it 我会认 when there are enough of them to be a grid.
+    const singles = toks.filter(t=>t.mode==='recog');
+    if(singles.length < 4) singles.forEach(t=>{ t.mode = 'write'; t.py = t.py || ''; });
   } else {
     // English: every word is a candidate — you tap the ones to keep (the underlined ones).
     const re = /[A-Za-zÀ-ɏḀ-ỿ]+(?:['’\-][A-Za-zÀ-ɏ]+)*/g; let m;
