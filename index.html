@@ -210,6 +210,7 @@ input,select,textarea{font:inherit;color:inherit}
   text-align:center;border-radius:20px;padding:16px 14px 14px;margin-top:6px;position:relative;
   background:linear-gradient(180deg,#c6abe4 0%, #eec2d4 52%, #f6ead4 100%);
   border:1px solid #d7c4ea;
+  container-type:inline-size;
 }
 .habitat.night{
   background:linear-gradient(180deg,#1e2e5c 0%, #33467d 60%, #445699 100%);
@@ -218,10 +219,13 @@ input,select,textarea{font:inherit;color:inherit}
 .habitat.night .petname{color:#fff}
 .habitat.night .petto,.habitat.night .dragrow{color:rgba(255,255,255,.8)}
 .habitat.night .petbar,.habitat.night .happybar{background:rgba(255,255,255,.22)}
-.pet{font-size:62px;line-height:1;display:inline-block;cursor:pointer;
+/* pet fills ~3/4 of the habitat card on its larger dimension (cqw = % of .habitat width) */
+.pet{--petsize:62px;--petsize:min(78cqw,300px);
+  font-size:var(--petsize);line-height:1;display:inline-block;cursor:pointer;
   filter:drop-shadow(0 6px 8px rgba(70,50,130,.18));animation:petfloat 3.6s ease-in-out infinite;
   -webkit-user-select:none;user-select:none;touch-action:manipulation}
-.pet.xl{font-size:84px}
+.pet.xl{--petsize:84px;--petsize:min(84cqw,340px)}
+.pet .petimg{width:var(--petsize);height:var(--petsize);object-fit:contain}
 .pet:active{transform:scale(.9)}
 .pet.egg{animation:eggwobble 2.6s ease-in-out infinite}
 .pet.egg.close{animation:eggwobble 0.5s ease-in-out infinite}
@@ -497,7 +501,7 @@ input,select,textarea{font:inherit;color:inherit}
    the rename). Calendar auto-plan · subject mix · chapters · streaks.
    ================================================================ */
 
-const VERSION = '0.15.0';
+const VERSION = '0.16.0';
 const LS_KEY  = 'migistudy_settings_v1';
 const LOG_KEY = 'migistudy_log_v1';
 const SUBJECTS = [
@@ -671,6 +675,28 @@ function currentTerm(ds){
   return 4;
 }
 function termName(t){ return 'Term '+t; }
+// Actual TEACHING weeks per term (school is out during the breaks, so these are NOT the same as
+// the currentTerm() boundaries above — e.g. currentTerm says "Term 3" from 30 May, but the class
+// doesn't resume until end-June after the long break). Used to estimate how far the class has got.
+const TERM_TEACH = { 1:{s:'01-02', e:'03-13'}, 2:{s:'03-23', e:'05-29'}, 3:{s:'06-29', e:'09-04'}, 4:{s:'09-14', e:'11-20'} };
+function termSpan(term, ds){
+  const y = (ds||todayStr()).slice(0,4), w = TERM_TEACH[term] || TERM_TEACH[1];
+  return {start: y+'-'+w.s, end: y+'-'+w.e};
+}
+function termProgress(ds){
+  // how far through the current term's teaching weeks we are, 0 → 1 (0 while the term hasn't started)
+  const sp = termSpan(currentTerm(ds), ds);
+  const total = gapDays(sp.start, sp.end) || 1;
+  return Math.max(0, Math.min(1, gapDays(sp.start, ds) / total));
+}
+function termWeek(ds){
+  const sp = termSpan(currentTerm(ds), ds);
+  const d = gapDays(sp.start, ds);
+  if(d < 0) return 0;                                    // still on break
+  const wks = Math.floor(gapDays(sp.start, sp.end)/7) + 1;
+  return Math.min(wks, Math.floor(d/7) + 1);
+}
+function termWeeks(ds){ const sp = termSpan(currentTerm(ds), ds); return Math.floor(gapDays(sp.start, sp.end)/7) + 1; }
 function subjMeta(k){ return SUBJECTS.find(x=>x.k===k) || {k, name:k, color:'#6b7085'}; }
 function subjName(k){ return subjMeta(k).name; }
 function subjBadge(k, extra){
@@ -861,13 +887,54 @@ function reachesRotation(kid, ds){
   const r = (kid.plan.rhythm||{})[strToDate(ds).getDay()] || {mode:'avail'};
   return r.mode==='avail' || r.mode==='study';
 }
-function syllabusTopic(kid, subject, ds, dayNum){
+/* Never plan a chapter the school hasn't taught yet.
+   A term tag says WHEN a chapter is taught — not that it's been taught *already*. Mid-Term-3
+   the class may only be 2 chapters in, so "any T3 chapter" would serve topics from August.
+
+   We work it out AUTOMATICALLY instead of asking the parent to tick anything: chapters are listed
+   in teaching order, so if a term has N chapters and we're W weeks into its (roughly 10-week)
+   teaching span, the class is realistically on chapter ceil(N × W/total). Everything from earlier
+   terms is taught; nothing from later terms is. A parent can override the guess in the syllabus
+   editor if their class is genuinely ahead or behind (kid.taughtUpto), but they never have to. */
+function taughtFlags(kid, subject, ds){
+  const syl = (kid.syllabus && kid.syllabus[subject]) || [];
+  const ovr = kid.taughtUpto && kid.taughtUpto[subject];
+  if(typeof ovr === 'number') return syl.map((c,i)=> i < ovr);   // parent set the marker by hand
+
+  const term = currentTerm(ds), onBreak = termWeek(ds) === 0;
+  const inTermTotal = syl.filter(c=>c.term===term).length;
+  // how many of THIS term's chapters the class has plausibly reached.
+  // On the school break: none yet (we revise instead). Once term starts: at least chapter 1.
+  const reached = onBreak ? 0 : Math.max(1, Math.ceil(termProgress(ds) * inTermTotal));
+  let seen = 0;
+  return syl.map(c=>{
+    if(!c.term) return true;               // untagged → always fair game (we can't know; don't hide it)
+    if(c.term < term) return true;         // earlier terms are done
+    if(c.term > term) return false;        // later terms haven't happened
+    return ++seen <= reached;              // this term: paced by the week we're in
+  });
+}
+function syllabusPick(kid, subject, ds, dayNum){
   const syl = (kid.syllabus && kid.syllabus[subject]) || [];
   if(!syl.length) return null;
   const term = currentTerm(ds);
-  const inTerm = syl.filter(c=>!c.term || c.term===term);
-  const pool = inTerm.length ? inTerm : syl;
-  return pool[ dayNum % pool.length ].t;
+  const ok = taughtFlags(kid, subject, ds);
+  const auto = !(kid.taughtUpto && typeof kid.taughtUpto[subject] === 'number');
+  const pickFrom = (pool, extra) => Object.assign({t: pool[ dayNum % pool.length ].t, auto}, extra||{});
+
+  const now = syl.filter((c,i)=> ok[i] && (!c.term || c.term===term));
+  if(now.length) return pickFrom(now);
+
+  // this term hasn't taught anything yet (e.g. still on the June break, or a pure-revision Term 4)
+  // → revise earlier terms rather than run ahead into chapters the class hasn't seen.
+  const earlier = syl.filter((c,i)=> ok[i] && c.term && c.term < term);
+  if(earlier.length) return pickFrom(earlier, {revision:true});
+
+  return null;   // nothing taught yet — the subject still runs, just without a chapter
+}
+function syllabusTopic(kid, subject, ds, dayNum){
+  const p = syllabusPick(kid, subject, ds, dayNum);
+  return p ? p.t : null;
 }
 function rotationSubject(kid, ds){
   // walk from the anchor counting rotation days — busy/rest/trip days consume
@@ -986,12 +1053,17 @@ function computePlan(kid, ds){
     }
     return Object.assign(out, asg);
   }
-  // regular study day: subject mix picks the subject, syllabus picks the chapter
+  // regular study day: subject mix picks the subject, syllabus picks a chapter school has taught
   const subject = rotationSubject(kid, ds);
-  const topic = syllabusTopic(kid, subject, ds, dayNum);
+  const pick = syllabusPick(kid, subject, ds, dayNum);
+  const wk = termWeek(ds);
+  const why = !pick ? 'from the subject mix'
+    : pick.revision ? (wk ? 'Revision' : 'Revision — school\'s on break')
+    : termName(currentTerm(ds)) + (wk ? ' · week ' + wk : '');
   return Object.assign(out, {kind:'study', subject,
-    topic: topic || undefined,
-    why: topic ? termName(currentTerm(ds)) : 'from the subject mix'});
+    topic: pick ? pick.t : undefined,
+    sylNudge: pick && pick.auto ? 'auto' : null,
+    why});
 }
 function topicChipHTML(p, mtop){
   if(!p.topic) return '';
@@ -1487,6 +1559,7 @@ function todayPlanCardHTML(k){
         <div class="tp-title" style="color:${s.color}">${esc(s.name)} <span class="muted" style="font-size:14px;font-weight:600">· ~${p.mins} min</span></div>
         <div class="tp-why">${esc(p.why||'')}</div>
         ${topicChip}
+        ${p.sylNudge==='auto' && p.topic ? `<div style="margin-top:6px"><button class="linkbtn" style="font-size:12px" onclick="openSyllabus('${p.subject}')">Class somewhere else? Adjust</button></div>` : ''}
       </div>
       ${p.capId ? (()=>{ const c=CAPS.find(x=>x.id===p.capId); return c?`<img class="cd-thumb" style="width:54px;height:54px" src="${capURL(c,'thumb')}" onclick="openDetail('${c.id}')" alt="">`:''; })() : ''}
     </div>` + petHabitatHTML(k, true, false) + footer;
@@ -1979,21 +2052,29 @@ function parseSyllabus(raw){
     return {t:l, term:null};
   });
 }
-let SYL_EDIT = null, SYL_SUBJ = null;
+let SYL_EDIT = null, SYL_SUBJ = null, SYL_OVR = null;
 function openSyllabus(subject){
   const k = activeKid();
   SYL_SUBJ = subject;
   const existing = (k.syllabus && k.syllabus[subject]) || [];
   const src = existing.length ? existing : ((CURRICULUM[k.level]&&CURRICULUM[k.level][subject])||[]);
   SYL_EDIT = src.map(c=>({t:c.t, term:c.term||null}));
+  const ov = k.taughtUpto && k.taughtUpto[subject];
+  SYL_OVR = (typeof ov === 'number') ? ov : null;    // null = let the app work it out
   renderSyllabusEditor();
 }
 function renderSyllabusEditor(){
   const subject = SYL_SUBJ, k = activeKid();
+  // preview the auto-guess (or the manual override) against the live syllabus being edited
+  const ok = taughtFlags({syllabus:{[subject]:SYL_EDIT}, taughtUpto: (SYL_OVR===null?{}:{[subject]:SYL_OVR})}, subject, todayStr());
+  const auto = SYL_OVR === null;
+  const lastOn = ok.lastIndexOf(true);
+  const wk = termWeek(todayStr()), term = currentTerm(todayStr());
   const rows = SYL_EDIT.map((c,i)=>`
-    <div class="sylrow">
-      <div class="sylname">${esc(c.t)}</div>
+    <div class="sylrow"${ok[i]?'':' style="opacity:.5"'}>
+      <div class="sylname">${ok[i]?'✓ ':'<span style="opacity:.6">🔒 </span>'}${esc(c.t)}${i===lastOn?' <span class="small muted" style="font-weight:700">← class is about here</span>':''}</div>
       <div class="sylterms">
+        <button type="button" class="chip xs ${(!auto && SYL_OVR===i+1)?'on':''}" title="The class has just finished this chapter" onclick="setSylUpto(${i})">✓ up to here</button>
         ${[1,2,3,4].map(t=>`<button type="button" class="chip xs ${c.term===t?'on':''}" data-t="${t}" onclick="setSylTerm(${i},${t},this)">T${t}</button>`).join('')}
         <button type="button" class="chip xs sylx" onclick="removeSylRow(${i})">✕</button>
       </div>
@@ -2003,7 +2084,12 @@ function renderSyllabusEditor(){
   m.innerHTML = `<div class="mback" onclick="closeModal()"></div>
   <div class="msheet"><div class="grab"></div>
     <h3 style="font-size:17px;font-weight:800;margin-bottom:4px">${esc(subjName(subject))} — year chapters</h3>
-    <div class="small muted" style="margin-bottom:12px">Tap <b>T1–T4</b> on each chapter to set which term it's taught in. Leave blank if unsure — it still shows up in the plan.</div>
+    <div class="small muted" style="margin-bottom:6px">The plan <b>never studies a 🔒 chapter</b> — it only uses what the class has already covered. It works that out on its own: chapters run in teaching order, so being ${wk?`<b>week ${wk} of ${termWeeks(todayStr())}</b> in Term ${term}`:`on <b>school break</b>`} puts the class about where the ✓ ends. Tap <b>T1–T4</b> to fix a chapter's term.</div>
+    <div class="small" style="margin-bottom:12px;font-weight:700;color:var(--ink2)">
+      ${auto ? `🤖 Auto — following the school calendar. Nothing to keep updated.`
+             : `✋ Set by you: first ${SYL_OVR} chapter${SYL_OVR===1?'':'s'} taught. <button type="button" class="linkbtn" onclick="setSylUpto(-1)">↺ back to auto</button>`}
+      <div class="small muted" style="font-weight:400;margin-top:2px">Only if the guess is off: tap <b>✓ up to here</b> on the chapter the class actually just finished.</div>
+    </div>
     <div class="syllist">${rows || '<div class="small muted" style="padding:8px 0">No chapters yet — add one below or load the default list.</div>'}</div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <input type="text" id="syl_add" placeholder="Add a chapter…" style="flex:1" onkeydown="if(event.key==='Enter'){addSylRow();event.preventDefault();}">
@@ -2023,9 +2109,15 @@ function setSylTerm(i, t, el){
   const row = el.closest('.sylrow');
   if(row) row.querySelectorAll('.chip[data-t]').forEach(c=>c.classList.toggle('on', +c.dataset.t===SYL_EDIT[i].term));
 }
+function setSylUpto(i){
+  // escape hatch only — the app guesses this itself. i = -1 hands it back to auto.
+  SYL_OVR = (i < 0 || SYL_OVR === i+1) ? null : i+1;
+  renderSyllabusEditor();
+  toast(SYL_OVR===null ? '🤖 Back to auto — following the school calendar' : '✋ Got it — the class is up to chapter '+SYL_OVR);
+}
 function removeSylRow(i){ SYL_EDIT.splice(i,1); renderSyllabusEditor(); }
 function addSylRow(){ const el=$('syl_add'); const v=(el&&el.value||'').trim(); if(!v) return; SYL_EDIT.push({t:v, term:null}); renderSyllabusEditor(); }
-function resetSylDefault(){ const k=activeKid(); SYL_EDIT = ((CURRICULUM[k.level]&&CURRICULUM[k.level][SYL_SUBJ])||[]).map(c=>({t:c.t,term:c.term||null})); renderSyllabusEditor(); toast('↺ Loaded the default list'); }
+function resetSylDefault(){ const k=activeKid(); SYL_EDIT = ((CURRICULUM[k.level]&&CURRICULUM[k.level][SYL_SUBJ])||[]).map(c=>({t:c.t,term:c.term||null})); SYL_OVR=null; renderSyllabusEditor(); toast('↺ Loaded the default list'); }
 function importPastedSyllabus(){
   const ta=$('syl_text'); if(!ta||!ta.value.trim()){ toast('Paste the contents page first'); return; }
   const have = new Set(SYL_EDIT.map(c=>c.t.toLowerCase()));
@@ -2047,6 +2139,8 @@ function importPastedSyllabus(){
 function saveSyllabus(){
   const k=activeKid(); if(!k.syllabus) k.syllabus={};
   k.syllabus[SYL_SUBJ] = (SYL_EDIT||[]).filter(c=>c.t && c.t.trim()).map(c=>({t:c.t.trim(), term:c.term||null}));
+  if(!k.taughtUpto) k.taughtUpto = {};
+  if(SYL_OVR === null) delete k.taughtUpto[SYL_SUBJ]; else k.taughtUpto[SYL_SUBJ] = SYL_OVR;
   saveS(); closeModal(); toast('✅ Chapters saved'); render();
 }
 
@@ -2649,6 +2743,7 @@ async function confirmNewYear(yr){
         }
         k.level = picks[k.id] || k.level;
         k.syllabus = {};
+        k.taughtUpto = {};             // last year's "class is up to here" overrides don't carry over
         seedSyllabusForKid(k, true);   // load the NEW level's default chapters for the fresh year
         if(k.plan){ k.plan.exams=[]; k.plan.blackouts=[]; k.plan.overrides={}; k.plan.anchor=todayStr(); }
       }
